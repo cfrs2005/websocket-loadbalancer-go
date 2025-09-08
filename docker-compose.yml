@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # WebSocket服务器节点1
+  websocket-node1:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8081:8081"
+    environment:
+      - NODE_ID=node1
+      - PORT=8081
+    networks:
+      - websocket-net
+
+  # WebSocket服务器节点2
+  websocket-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8082:8082"
+    environment:
+      - NODE_ID=node2
+      - PORT=8082
+    networks:
+      - websocket-net
+
+  # WebSocket服务器节点3
+  websocket-node3:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8083:8083"
+    environment:
+      - NODE_ID=node3
+      - PORT=8083
+    networks:
+      - websocket-net
+
+  # Nginx负载均衡器
+  nginx-lb:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx-logs:/var/log/nginx
+    depends_on:
+      - websocket-node1
+      - websocket-node2
+      - websocket-node3
+    networks:
+      - websocket-net
+
+  # 客户端测试容器（可选）
+  websocket-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    networks:
+      - websocket-net
+    depends_on:
+      - nginx-lb
+    command: ["ws://nginx-lb/ws"]
+
+networks:
+  websocket-net:
+    driver: bridge
+
+# 使用方法：
+# 1. docker-compose up -d
+# 2. 查看服务状态: docker-compose ps
+# 3. 查看日志: docker-compose logs -f
+# 4. 测试负载均衡: curl http://localhost/health
+# 5. 停止服务: docker-compose down

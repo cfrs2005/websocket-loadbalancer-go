@@ -1,0 +1,31 @@
+# 编译产物
+websocket-system
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go 构建缓存
+*.test
+*.prof
+
+# IDE 和编辑器文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.cursorindexingignore
+
+# 临时文件和日志
+*.log
+*.tmp
+*.temp
+
+# 开发过程中的临时文件
+CLAUDE.md
+.specstory/
+
+# 运行时文件
+*.pid
