@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 后端节点管理界面 - 增强版</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .node-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .info-card {
+            background: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .info-label {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .section {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            font-size: 1.8rem;
+        }
+
+        .clients-grid {
+            display: grid;
+            gap: 20px;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+        }
+
+        .client-card {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            position: relative;
+        }
+
+        .client-card.other-node {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        }
+
+        .client-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .client-details {
+            font-size: 0.9rem;
+            opacity: 0.9;
+            margin-bottom: 15px;
+        }
+
+        .client-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .action-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-1px);
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .status.healthy, .status.online {
+            background: #48bb78;
+            color: white;
+        }
+
+        .status.unhealthy, .status.offline {
+            background: #f56565;
+            color: white;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+
+        .no-data {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+
+        .view-toggle {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+        }
+
+        .node-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.3);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: bold;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: none;
+            width: 80%;
+            max-width: 500px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: black;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-group input, .form-group textarea, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+            
+            button {
+                width: 100%;
+            }
+
+            .clients-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🖥️ WebSocket 后端节点 - 增强版</h1>
+            <p>节点管理和监控界面 (支持全局客户端管理)</p>
+            
+            <div class="node-info">
+                <div class="info-card">
+                    <div class="info-label">节点ID</div>
+                    <div class="info-value" id="nodeId">-</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">端口</div>
+                    <div class="info-value" id="nodePort">-</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">连接数</div>
+                    <div class="info-value" id="clientCount">0</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">状态</div>
+                    <div class="info-value">
+                        <span class="status healthy" id="nodeStatus">运行中</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>🎛️ 控制面板</h2>
+            <div class="controls">
+                <button onclick="refreshData()">🔄 刷新数据</button>
+                <button onclick="clearSearch()">🧹 清空搜索</button>
+                <button onclick="exportData()">📊 导出数据</button>
+                <button onclick="toggleView()">🌐 切换视图</button>
+            </div>
+            <div class="view-toggle">
+                <label>
+                    <input type="checkbox" id="globalViewToggle" onchange="toggleView()">
+                    显示全局客户端列表 (所有节点的客户端)
+                </label>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2 id="clientsTitle">👥 客户端连接 (<span id="totalClients">0</span>)</h2>
+            
+            <input type="text" id="searchBox" class="search-box" 
+                   placeholder="🔍 搜索客户端名称或ID..." 
+                   onkeyup="filterClients()">
+            
+            <div id="clientsContainer" class="clients-grid">
+                <div class="no-data">正在加载客户端数据...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 发送指令模态框 -->
+    <div id="commandModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>发送指令到客户端</h3>
+            <div class="form-group">
+                <label>客户端:</label>
+                <input type="text" id="modalClientName" readonly>
+            </div>
+            <div class="form-group">
+                <label>指令类型:</label>
+                <select id="modalCommand">
+                    <option value="ping">Ping测试</option>
+                    <option value="status">获取状态</option>
+                    <option value="restart">重启连接</option>
+                    <option value="custom">自定义指令</option>
+                </select>
+            </div>
+            <div class="form-group" id="customCommandGroup" style="display: none;">
+                <label>自定义指令:</label>
+                <input type="text" id="modalCustomCommand" placeholder="输入自定义指令">
+            </div>
+            <div class="form-group">
+                <label>附加数据 (JSON格式, 可选):</label>
+                <textarea id="modalData" rows="3" placeholder='{"key": "value"}'></textarea>
+            </div>
+            <div class="controls">
+                <button onclick="sendCommand()">发送指令</button>
+                <button onclick="closeModal()">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let nodeData = {};
+        let clientsData = [];
+        let isGlobalView = false;
+        let selectedClientId = null;
+
+        // 获取当前端口
+        const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+
+        // 初始化页面
+        async function initPage() {
+            // 如果通过负载均衡器访问，默认启用全局视图
+            if (currentPort == '8080') {
+                isGlobalView = true;
+                const globalViewToggle = document.getElementById('globalViewToggle');
+                if (globalViewToggle) {
+                    globalViewToggle.checked = true;
+                }
+            }
+            
+            await loadNodeInfo();
+            await loadClients();
+            
+            // 每5秒自动刷新
+            setInterval(async () => {
+                await loadClients();
+            }, 5000);
+
+            // 绑定模态框事件
+            setupModal();
+        }
+
+        // 设置模态框
+        function setupModal() {
+            const modal = document.getElementById('commandModal');
+            const span = document.getElementsByClassName('close')[0];
+            const commandSelect = document.getElementById('modalCommand');
+
+            span.onclick = closeModal;
+            window.onclick = function(event) {
+                if (event.target == modal) {
+                    closeModal();
+                }
+            }
+
+            commandSelect.onchange = function() {
+                const customGroup = document.getElementById('customCommandGroup');
+                if (this.value === 'custom') {
+                    customGroup.style.display = 'block';
+                } else {
+                    customGroup.style.display = 'none';
+                }
+            }
+        }
+
+        // 加载节点信息
+        async function loadNodeInfo() {
+            try {
+                const response = await fetch('/api/node-info');
+                nodeData = await response.json();
+                
+                // 添加安全检查
+                const nodeIdEl = document.getElementById('nodeId');
+                const nodePortEl = document.getElementById('nodePort');
+                const nodeStatusEl = document.getElementById('nodeStatus');
+                
+                if (nodeIdEl) nodeIdEl.textContent = nodeData.node_id || '-';
+                if (nodePortEl) nodePortEl.textContent = nodeData.port || currentPort;
+                if (nodeStatusEl) nodeStatusEl.textContent = nodeData.status === 'running' ? '运行中' : '停止';
+                
+                // 更新页面标题
+                if (nodeData.node_id) {
+                    document.title = `节点 ${nodeData.node_id} - WebSocket 后端管理 (增强版)`;
+                }
+            } catch (error) {
+                console.error('加载节点信息失败:', error);
+                // 在错误情况下提供默认值
+                const nodeIdEl = document.getElementById('nodeId');
+                const nodePortEl = document.getElementById('nodePort');
+                const nodeStatusEl = document.getElementById('nodeStatus');
+                
+                if (nodeIdEl) nodeIdEl.textContent = '未知';
+                if (nodePortEl) nodePortEl.textContent = currentPort;
+                if (nodeStatusEl) {
+                    nodeStatusEl.textContent = '连接失败';
+                    nodeStatusEl.className = 'status unhealthy';
+                }
+            }
+        }
+
+        // 加载客户端列表
+        async function loadClients() {
+            try {
+                let endpoint;
+                // 智能选择API端点
+                if (currentPort == '8080') {
+                    // 通过负载均衡器访问，使用聚合API
+                    endpoint = isGlobalView ? '/api/all-clients' : '/api/clients';
+                } else {
+                    // 直接访问节点，使用原来的API
+                    endpoint = isGlobalView ? '/api/global-clients' : '/api/clients';
+                }
+                
+                const response = await fetch(endpoint);
+                const data = await response.json();
+                
+                clientsData = data.clients || [];
+                
+                // 更新连接数（添加安全检查）
+                const clientCountEl = document.getElementById('clientCount');
+                const totalClientsEl = document.getElementById('totalClients');
+                
+                if (clientCountEl) clientCountEl.textContent = data.total || 0;
+                if (totalClientsEl) totalClientsEl.textContent = data.total || 0;
+                
+                // 更新标题
+                let title;
+                if (currentPort == '8080') {
+                    // 通过负载均衡器访问
+                    title = isGlobalView ? 
+                        `🌐 全系统客户端聚合视图 (${data.total || 0})` : 
+                        `👥 当前节点客户端 (${data.total || 0})`;
+                } else {
+                    // 直接访问节点
+                    title = isGlobalView ? 
+                        `🌐 全局客户端列表 (${data.total || 0})` : 
+                        `👥 本节点客户端 (${data.total || 0})`;
+                }
+                
+                const titleEl = document.getElementById('clientsTitle');
+                if (titleEl) titleEl.innerHTML = title;
+                
+                // 显示客户端列表
+                displayClients(clientsData);
+            } catch (error) {
+                console.error('加载客户端列表失败:', error);
+                const container = document.getElementById('clientsContainer');
+                if (container) {
+                    container.innerHTML = '<div class="no-data">❌ 加载客户端数据失败</div>';
+                }
+            }
+        }
+
+        // 显示客户端列表
+        function displayClients(clients) {
+            const container = document.getElementById('clientsContainer');
+            
+            if (!clients || clients.length === 0) {
+                const message = isGlobalView ? 
+                    '📭 全局暂无客户端连接' : 
+                    '📭 本节点暂无客户端连接';
+                container.innerHTML = `<div class="no-data">${message}</div>`;
+                return;
+            }
+
+            const clientCards = clients.map(client => {
+                const connTime = new Date(client.conn_time).toLocaleString();
+                const lastSeen = new Date(client.last_seen).toLocaleString();
+                const isOtherNode = isGlobalView && client.node_id !== nodeData.node_id;
+                const cardClass = isOtherNode ? 'client-card other-node' : 'client-card';
+                
+                return `
+                    <div class="${cardClass}">
+                        <div class="node-badge">${client.node_id || client.node || 'N/A'}</div>
+                        <div class="client-name">
+                            👤 ${client.name || client.id}
+                        </div>
+                        <div class="client-details">
+                            <div><strong>ID:</strong> ${client.id}</div>
+                            <div><strong>连接时间:</strong> ${connTime}</div>
+                            <div><strong>最后活跃:</strong> ${lastSeen}</div>
+                            <div><strong>状态:</strong> <span class="status ${client.status || 'offline'}">${getStatusText(client.status, client.is_active)}</span></div>
+                            ${isGlobalView ? `<div><strong>所在节点:</strong> ${client.node_id}:${client.node_port}</div>` : ''}
+                        </div>
+                        <div class="client-actions">
+                            <button class="action-btn" onclick="sendCommandToClient('${client.id}', '${client.name || client.id}')">
+                                📨 发送指令
+                            </button>
+                            <button class="action-btn" onclick="pingClient('${client.id}')">
+                                🏓 Ping
+                            </button>
+                            <button class="action-btn" onclick="getClientStatus('${client.id}')">
+                                📊 状态
+                            </button>
+                            ${isOtherNode ? 
+                                `<button class="action-btn" onclick="viewNodeDetails('${client.node_id}', ${client.node_port})">🔗 查看节点</button>` : 
+                                ''
+                            }
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = clientCards;
+        }
+
+        // 获取状态文本
+        function getStatusText(status, isActive) {
+            if (status === 'online' || isActive) return '🟢 在线';
+            if (status === 'offline' || !isActive) return '🔴 离线';
+            if (status === 'busy') return '🟡 忙碌';
+            return '⚪ 未知';
+        }
+
+        // 搜索过滤客户端
+        function filterClients() {
+            const searchBox = document.getElementById('searchBox');
+            if (!searchBox) return;
+            
+            const searchTerm = searchBox.value.toLowerCase().trim();
+            
+            if (!searchTerm) {
+                displayClients(clientsData);
+                return;
+            }
+
+            const filtered = clientsData.filter(client => 
+                (client.name && client.name.toLowerCase().includes(searchTerm)) ||
+                (client.id && client.id.toLowerCase().includes(searchTerm)) ||
+                (client.node_id && client.node_id.toLowerCase().includes(searchTerm))
+            );
+
+            displayClients(filtered);
+        }
+
+        // 清空搜索
+        function clearSearch() {
+            const searchBox = document.getElementById('searchBox');
+            if (searchBox) {
+                searchBox.value = '';
+                displayClients(clientsData);
+            }
+        }
+
+        // 刷新数据
+        async function refreshData() {
+            await loadNodeInfo();
+            await loadClients();
+        }
+
+        // 切换视图
+        function toggleView() {
+            const checkbox = document.getElementById('globalViewToggle');
+            if (checkbox) {
+                isGlobalView = checkbox.checked;
+                loadClients();
+            }
+        }
+
+        // 导出数据
+        function exportData() {
+            const exportData = {
+                node: nodeData,
+                clients: clientsData,
+                view_type: isGlobalView ? 'global' : 'local',
+                export_time: new Date().toISOString()
+            };
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const filename = isGlobalView ? 
+                `global-clients-${new Date().toISOString().split('T')[0]}.json` :
+                `node-${nodeData.node_id}-${new Date().toISOString().split('T')[0]}.json`;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 发送指令到客户端
+        function sendCommandToClient(clientId, clientName) {
+            selectedClientId = clientId;
+            const modalClientName = document.getElementById('modalClientName');
+            const commandModal = document.getElementById('commandModal');
+            
+            if (modalClientName) {
+                modalClientName.value = `${clientName} (${clientId})`;
+            }
+            if (commandModal) {
+                commandModal.style.display = 'block';
+            }
+        }
+
+        // 快速Ping客户端
+        async function pingClient(clientId) {
+            try {
+                const response = await fetch('/api/send-command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        client_id: clientId,
+                        command: 'ping',
+                        data: { timestamp: Date.now() }
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert(`✅ Ping发送成功! (${result.message})`);
+                } else {
+                    alert(`❌ Ping发送失败: ${result.error || result.message}`);
+                }
+            } catch (error) {
+                alert(`❌ 发送Ping失败: ${error.message}`);
+            }
+        }
+
+        // 获取客户端状态
+        async function getClientStatus(clientId) {
+            try {
+                const response = await fetch('/api/send-command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        client_id: clientId,
+                        command: 'status',
+                        data: {}
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert(`✅ 状态查询发送成功! (${result.message})\n请查看服务器日志以获取详细响应`);
+                } else {
+                    alert(`❌ 状态查询失败: ${result.error || result.message}`);
+                }
+            } catch (error) {
+                alert(`❌ 发送状态查询失败: ${error.message}`);
+            }
+        }
+
+        // 发送指令
+        async function sendCommand() {
+            const modalCommand = document.getElementById('modalCommand');
+            const modalCustomCommand = document.getElementById('modalCustomCommand');
+            const modalData = document.getElementById('modalData');
+            
+            if (!modalCommand || !modalCustomCommand || !modalData) {
+                alert('❌ 界面元素不存在，请刷新页面重试');
+                return;
+            }
+            
+            const command = modalCommand.value;
+            const customCommand = modalCustomCommand.value;
+            const dataText = modalData.value;
+
+            let actualCommand = command;
+            if (command === 'custom' && customCommand) {
+                actualCommand = customCommand;
+            }
+
+            let data = {};
+            if (dataText.trim()) {
+                try {
+                    data = JSON.parse(dataText);
+                } catch (e) {
+                    alert('❌ 附加数据格式错误，请输入有效的JSON格式');
+                    return;
+                }
+            }
+
+            try {
+                const response = await fetch('/api/send-command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        client_id: selectedClientId,
+                        command: actualCommand,
+                        data: data
+                    })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert(`✅ 指令发送成功! (${result.message})`);
+                    closeModal();
+                } else {
+                    alert(`❌ 指令发送失败: ${result.error || result.message}`);
+                }
+            } catch (error) {
+                alert(`❌ 发送指令失败: ${error.message}`);
+            }
+        }
+
+        // 关闭模态框
+        function closeModal() {
+            const commandModal = document.getElementById('commandModal');
+            const modalCommand = document.getElementById('modalCommand');
+            const modalCustomCommand = document.getElementById('modalCustomCommand');
+            const modalData = document.getElementById('modalData');
+            const customCommandGroup = document.getElementById('customCommandGroup');
+            
+            if (commandModal) commandModal.style.display = 'none';
+            
+            // 重置表单
+            if (modalCommand) modalCommand.value = 'ping';
+            if (modalCustomCommand) modalCustomCommand.value = '';
+            if (modalData) modalData.value = '';
+            if (customCommandGroup) customCommandGroup.style.display = 'none';
+        }
+
+        // 查看其他节点详情
+        function viewNodeDetails(nodeId, nodePort) {
+            const url = `http://localhost:${nodePort}/web-node-enhanced.html`;
+            window.open(url, '_blank');
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', initPage);
+    </script>
+</body>
+</html>

@@ -18,6 +18,9 @@ func main() {
 	clientName := flag.String("name", "", "客户端名称")
 	flag.Parse()
 
+	// 初始化全局客户端注册表
+	InitGlobalRegistry("global_clients.json")
+
 	switch *service {
 	case "server":
 		switch *mode {
@@ -97,10 +100,10 @@ func runMultiNodes() {
 func runLoadBalancer(port int, strategy LoadBalanceStrategy) {
 	lb := NewLoadBalancer(port, strategy)
 	
-	// 添加后端服务器
-	lb.AddBackend("node1", "ws://localhost:8081/ws")
-	lb.AddBackend("node2", "ws://localhost:8082/ws")
-	lb.AddBackend("node3", "ws://localhost:8083/ws")
+	// 添加后端服务器（传入端口号，不再是ws地址）
+	lb.AddBackend("node1", 8081)
+	lb.AddBackend("node2", 8082)
+	lb.AddBackend("node3", 8083)
 
 	// 优雅关闭
 	go func() {

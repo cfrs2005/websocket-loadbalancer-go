@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/md5"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"sync"
@@ -23,95 +26,218 @@ const (
 
 // 后端服务器信息
 type BackendServer struct {
-	ID           string
-	Address      string  // ws://localhost:8081/ws
-	Connections  int     // 当前连接数
-	IsHealthy    bool    // 健康状态
-	LastCheck    time.Time
-	Weight       int     // 权重
+	ID          string
+	HTTPAddress string    // http://localhost:8081 (HTTP服务地址)
+	WSAddress   string    // ws://localhost:8081/ws (WebSocket地址)
+	Connections int       // 当前连接数
+	IsHealthy   bool      // 健康状态
+	LastCheck   time.Time
+	Weight      int       // 权重
+	Proxy       *httputil.ReverseProxy // HTTP代理
 }
 
-// 客户端连接信息
-type ClientConnection struct {
-	ID         string
-	Name       string
-	BackendID  string    // 连接到哪个后端服务器
-	ConnTime   time.Time
-	LastSeen   time.Time
-	ClientConn *websocket.Conn // 客户端连接
-	ServerConn *websocket.Conn // 到后端服务器的连接
-	IsActive   bool
+// 会话信息 - 用于会话保持
+type Session struct {
+	SessionID  string    // 会话ID
+	BackendID  string    // 绑定的后端服务器ID
+	ClientIP   string    // 客户端IP
+	CreateTime time.Time // 创建时间
+	LastSeen   time.Time // 最后访问时间
 }
 
-// 负载均衡器
+// 纯七层负载均衡器 - 仅做转发和健康检查
 type LoadBalancer struct {
 	port         int
 	strategy     LoadBalanceStrategy
-	backends     map[string]*BackendServer
+	backends     map[string]*BackendServer  // 后端服务器
 	backendsMu   sync.RWMutex
-	clients      map[string]*ClientConnection
-	clientsMu    sync.RWMutex
+	sessions     map[string]*Session        // 会话保持
+	sessionsMu   sync.RWMutex
 	upgrader     websocket.Upgrader
 	roundRobinIdx int
 }
 
 // 创建负载均衡器
 func NewLoadBalancer(port int, strategy LoadBalanceStrategy) *LoadBalancer {
-	return &LoadBalancer{
+	lb := &LoadBalancer{
 		port:     port,
 		strategy: strategy,
 		backends: make(map[string]*BackendServer),
-		clients:  make(map[string]*ClientConnection),
+		sessions: make(map[string]*Session),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
 			},
 		},
 	}
+	
+	// 启动健康检查
+	go lb.healthCheck()
+	
+	return lb
 }
 
 // 添加后端服务器
-func (lb *LoadBalancer) AddBackend(id, address string) {
+func (lb *LoadBalancer) AddBackend(id string, httpPort int) {
 	lb.backendsMu.Lock()
 	defer lb.backendsMu.Unlock()
 	
+	httpAddr := fmt.Sprintf("http://localhost:%d", httpPort)
+	wsAddr := fmt.Sprintf("ws://localhost:%d/ws", httpPort)
+	
+	// 创建 HTTP 反向代理
+	targetURL, _ := url.Parse(httpAddr)
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	
 	lb.backends[id] = &BackendServer{
-		ID:        id,
-		Address:   address,
-		IsHealthy: true,
-		LastCheck: time.Now(),
-		Weight:    1,
+		ID:          id,
+		HTTPAddress: httpAddr,
+		WSAddress:   wsAddr,
+		IsHealthy:   true,
+		LastCheck:   time.Now(),
+		Weight:      1,
+		Proxy:       proxy,
 	}
 	
-	log.Printf("添加后端服务器: %s -> %s", id, address)
+	log.Printf("添加后端服务器: %s -> HTTP:%s WS:%s", id, httpAddr, wsAddr)
 }
 
-// 启动负载均衡器
-func (lb *LoadBalancer) Start() error {
-	// WebSocket连接处理（客户端连接）
-	http.HandleFunc("/ws", lb.handleWebSocket)
+// 获取客户端唯一标识（用于会话保持）
+func (lb *LoadBalancer) getClientIdentifier(r *http.Request) string {
+	// 优先使用 Session Cookie
+	if cookie, err := r.Cookie("lb_session"); err == nil {
+		return cookie.Value
+	}
 	
-	// Web API接口
-	http.HandleFunc("/api/clients", lb.handleClientList)
-	http.HandleFunc("/api/query", lb.handleQuery)
-	http.HandleFunc("/api/backends", lb.handleBackends)
-	http.HandleFunc("/health", lb.handleHealth)
-	
-	// 静态文件服务
-	http.Handle("/", http.FileServer(http.Dir("./")))
-	
-	// 启动健康检查
-	go lb.healthChecker()
-	
-	log.Printf("负载均衡器启动在端口 %d", lb.port)
-	log.Printf("负载均衡策略: %s", lb.strategy)
-	log.Printf("Web界面: http://localhost:%d/web-client.html", lb.port)
-	
-	return http.ListenAndServe(":"+strconv.Itoa(lb.port), nil)
+	// 如果没有 Cookie，使用 IP + User-Agent 生成哈希
+	clientInfo := r.RemoteAddr + r.UserAgent()
+	hash := md5.Sum([]byte(clientInfo))
+	return fmt.Sprintf("%x", hash)
 }
 
-// 处理客户端WebSocket连接
-func (lb *LoadBalancer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+// 选择后端服务器（支持会话保持）
+func (lb *LoadBalancer) selectBackend(clientID string) *BackendServer {
+	lb.backendsMu.RLock()
+	defer lb.backendsMu.RUnlock()
+	
+	// 检查是否有现有会话
+	lb.sessionsMu.RLock()
+	if session, exists := lb.sessions[clientID]; exists {
+		if backend, exists := lb.backends[session.BackendID]; exists && backend.IsHealthy {
+			// 更新最后访问时间
+			session.LastSeen = time.Now()
+			lb.sessionsMu.RUnlock()
+			return backend
+		}
+	}
+	lb.sessionsMu.RUnlock()
+	
+	// 没有会话或原后端不健康，选择新的后端
+	var healthyBackends []*BackendServer
+	for _, backend := range lb.backends {
+		if backend.IsHealthy {
+			healthyBackends = append(healthyBackends, backend)
+		}
+	}
+	
+	if len(healthyBackends) == 0 {
+		return nil
+	}
+	
+	var selectedBackend *BackendServer
+	switch lb.strategy {
+	case RoundRobin:
+		selectedBackend = healthyBackends[lb.roundRobinIdx%len(healthyBackends)]
+		lb.roundRobinIdx++
+	case LeastConn:
+		selectedBackend = healthyBackends[0]
+		for _, backend := range healthyBackends[1:] {
+			if backend.Connections < selectedBackend.Connections {
+				selectedBackend = backend
+			}
+		}
+	default: // IPHash 或其他
+		hash := md5.Sum([]byte(clientID))
+		idx := int(hash[0]) % len(healthyBackends)
+		selectedBackend = healthyBackends[idx]
+	}
+	
+	// 创建或更新会话
+	lb.sessionsMu.Lock()
+	lb.sessions[clientID] = &Session{
+		SessionID:  clientID,
+		BackendID:  selectedBackend.ID,
+		CreateTime: time.Now(),
+		LastSeen:   time.Now(),
+	}
+	lb.sessionsMu.Unlock()
+	
+	return selectedBackend
+}
+
+// 健康检查
+func (lb *LoadBalancer) healthCheck() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	
+	for range ticker.C {
+		lb.backendsMu.Lock()
+		for id, backend := range lb.backends {
+			// 检查HTTP健康状态
+			resp, err := http.Get(backend.HTTPAddress + "/health")
+			if err != nil || resp.StatusCode != 200 {
+				if backend.IsHealthy {
+					log.Printf("后端服务器 %s (%s) 变为不健康", id, backend.HTTPAddress)
+				}
+				backend.IsHealthy = false
+			} else {
+				if !backend.IsHealthy {
+					log.Printf("后端服务器 %s (%s) 恢复健康", id, backend.HTTPAddress)
+				}
+				backend.IsHealthy = true
+				resp.Body.Close()
+			}
+			backend.LastCheck = time.Now()
+		}
+		lb.backendsMu.Unlock()
+	}
+}
+
+// 处理所有请求的核心函数
+func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
+	// 获取客户端标识
+	clientID := lb.getClientIdentifier(r)
+	
+	// 选择后端服务器
+	backend := lb.selectBackend(clientID)
+	if backend == nil {
+		http.Error(w, "没有可用的后端服务器", http.StatusServiceUnavailable)
+		return
+	}
+	
+	// 设置会话 Cookie
+	cookie := &http.Cookie{
+		Name:     "lb_session",
+		Value:    clientID,
+		Path:     "/",
+		MaxAge:   3600 * 24, // 24小时
+		HttpOnly: false,     // 允许JS访问，方便WebSocket使用
+	}
+	http.SetCookie(w, cookie)
+	
+	// 检查是否是 WebSocket 升级请求
+	if websocket.IsWebSocketUpgrade(r) {
+		lb.handleWebSocketProxy(w, r, backend)
+		return
+	}
+	
+	// HTTP 请求直接代理到后端
+	backend.Proxy.ServeHTTP(w, r)
+}
+
+// WebSocket 代理处理
+func (lb *LoadBalancer) handleWebSocketProxy(w http.ResponseWriter, r *http.Request, backend *BackendServer) {
+	// 升级客户端连接
 	clientConn, err := lb.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket升级失败: %v", err)
@@ -119,407 +245,176 @@ func (lb *LoadBalancer) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 	}
 	defer clientConn.Close()
 
-	// 等待客户端注册消息
-	var regMsg map[string]interface{}
-	err = clientConn.ReadJSON(&regMsg)
+	// 连接到后端 WebSocket 服务器
+	backendURL := backend.WSAddress
+	if r.URL.RawQuery != "" {
+		backendURL += "?" + r.URL.RawQuery
+	}
+
+	backendConn, _, err := websocket.DefaultDialer.Dial(backendURL, nil)
 	if err != nil {
-		log.Printf("读取注册消息失败: %v", err)
+		log.Printf("连接后端WebSocket失败: %v", err)
+		clientConn.WriteMessage(websocket.CloseMessage, 
+			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "后端服务器连接失败"))
 		return
 	}
+	defer backendConn.Close()
 
-	clientID, _ := regMsg["client_id"].(string)
-	clientName, _ := regMsg["client_name"].(string)
-	
-	if clientID == "" {
-		clientID = "client_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	if clientName == "" {
-		clientName = "客户端_" + clientID[len(clientID)-4:]
-	}
+	log.Printf("WebSocket连接已建立: 客户端 -> %s", backend.ID)
 
-	log.Printf("客户端注册: %s (%s)", clientName, clientID)
-
-	// 选择后端服务器
-	backend := lb.selectBackend(r.RemoteAddr)
-	if backend == nil {
-		log.Printf("没有可用的后端服务器")
-		clientConn.WriteJSON(map[string]interface{}{
-			"error": "没有可用的服务器",
-		})
-		return
-	}
-
-	// 连接到后端服务器
-	serverConn, err := lb.connectToBackend(backend)
-	if err != nil {
-		log.Printf("连接后端服务器失败: %v", err)
-		clientConn.WriteJSON(map[string]interface{}{
-			"error": "服务器连接失败",
-		})
-		return
-	}
-	defer serverConn.Close()
-
-	// 创建客户端连接记录
-	client := &ClientConnection{
-		ID:         clientID,
-		Name:       clientName,
-		BackendID:  backend.ID,
-		ConnTime:   time.Now(),
-		LastSeen:   time.Now(),
-		ClientConn: clientConn,
-		ServerConn: serverConn,
-		IsActive:   true,
-	}
-
-	lb.clientsMu.Lock()
-	lb.clients[clientID] = client
+	// 增加连接计数
+	lb.backendsMu.Lock()
 	backend.Connections++
-	lb.clientsMu.Unlock()
-
-	log.Printf("客户端 %s 连接到后端服务器 %s", clientName, backend.ID)
-
-	// 向后端服务器转发注册消息
-	serverConn.WriteJSON(regMsg)
+	lb.backendsMu.Unlock()
 
 	// 清理函数
 	defer func() {
-		lb.clientsMu.Lock()
-		delete(lb.clients, clientID)
+		lb.backendsMu.Lock()
 		if backend.Connections > 0 {
 			backend.Connections--
 		}
-		lb.clientsMu.Unlock()
-		log.Printf("客户端 %s 断开连接", clientName)
-	}()
-
-	// 启动消息转发
-	lb.forwardMessages(client)
-}
-
-// 选择后端服务器
-func (lb *LoadBalancer) selectBackend(_ string) *BackendServer {
-	lb.backendsMu.RLock()
-	defer lb.backendsMu.RUnlock()
-
-	// 过滤健康的服务器
-	healthyBackends := make([]*BackendServer, 0)
-	for _, backend := range lb.backends {
-		if backend.IsHealthy {
-			healthyBackends = append(healthyBackends, backend)
-		}
-	}
-
-	if len(healthyBackends) == 0 {
-		return nil
-	}
-
-	switch lb.strategy {
-	case RoundRobin:
-		backend := healthyBackends[lb.roundRobinIdx%len(healthyBackends)]
-		lb.roundRobinIdx++
-		return backend
-		
-	case LeastConn:
-		var selected *BackendServer
-		minConn := int(^uint(0) >> 1) // max int
-		for _, backend := range healthyBackends {
-			if backend.Connections < minConn {
-				minConn = backend.Connections
-				selected = backend
-			}
-		}
-		return selected
-		
-	default:
-		return healthyBackends[0]
-	}
-}
-
-// 连接到后端服务器
-func (lb *LoadBalancer) connectToBackend(backend *BackendServer) (*websocket.Conn, error) {
-	u, err := url.Parse(backend.Address)
-	if err != nil {
-		return nil, err
-	}
-
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		// 标记服务器为不健康
-		backend.IsHealthy = false
-		return nil, err
-	}
-
-	return conn, nil
-}
-
-// 消息转发
-func (lb *LoadBalancer) forwardMessages(client *ClientConnection) {
-	defer func() {
-		// 清理连接
-		lb.cleanupConnection(client)
-	}()
-
-	// 使用通道来协调两个goroutine的退出
-	done := make(chan struct{})
-	clientError := make(chan error, 1)
-	serverError := make(chan error, 1)
-
-	// 客户端 -> 服务端
-	go func() {
-		defer close(clientError)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-
-			var msg map[string]interface{}
-			err := client.ClientConn.ReadJSON(&msg)
-			if err != nil {
-				log.Printf("读取客户端消息失败: %v", err)
-				clientError <- err
-				return
-			}
-			
-			client.LastSeen = time.Now()
-			
-			// 转发到后端服务器
-			err = client.ServerConn.WriteJSON(msg)
-			if err != nil {
-				log.Printf("转发到服务端失败: %v", err)
-				clientError <- err
-				return
-			}
-		}
-	}()
-
-	// 服务端 -> 客户端
-	go func() {
-		defer close(serverError)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
-
-			var msg map[string]interface{}
-			err := client.ServerConn.ReadJSON(&msg)
-			if err != nil {
-				log.Printf("读取服务端消息失败: %v", err)
-				serverError <- err
-				return
-			}
-			
-			// 转发到客户端
-			err = client.ClientConn.WriteJSON(msg)
-			if err != nil {
-				log.Printf("转发到客户端失败: %v", err)
-				serverError <- err
-				return
-			}
-		}
-	}()
-
-	// 等待任一方向的连接断开
-	select {
-	case err := <-clientError:
-		if err != nil {
-			log.Printf("客户端连接错误: %v", err)
-		}
-	case err := <-serverError:
-		if err != nil {
-			log.Printf("服务端连接错误: %v", err)
-		}
-	}
-
-	// 通知所有goroutine退出
-	close(done)
-	log.Printf("客户端 %s 的消息转发已停止", client.ID)
-}
-
-// 清理连接
-func (lb *LoadBalancer) cleanupConnection(client *ClientConnection) {
-	log.Printf("清理客户端连接: %s", client.ID)
-
-	// 关闭WebSocket连接
-	if client.ClientConn != nil {
-		client.ClientConn.Close()
-	}
-	if client.ServerConn != nil {
-		client.ServerConn.Close()
-	}
-
-	// 从客户端映射中移除
-	lb.clientsMu.Lock()
-	delete(lb.clients, client.ID)
-	lb.clientsMu.Unlock()
-
-	// 减少后端服务器的连接计数
-	if client.BackendID != "" {
-		lb.backendsMu.Lock()
-		for _, backend := range lb.backends {
-			if backend.ID == client.BackendID {
-				if backend.Connections > 0 {
-					backend.Connections--
-				}
-				log.Printf("后端服务器 %s 连接数减少: %d", backend.ID, backend.Connections)
-				break
-			}
-		}
 		lb.backendsMu.Unlock()
-	}
+		log.Printf("WebSocket连接已关闭: 客户端 -> %s", backend.ID)
+	}()
 
-	log.Printf("客户端 %s 已从系统中清理", client.ID)
+	// 双向消息转发
+	errChan := make(chan error, 2)
+	
+	// 客户端 -> 后端
+	go func() {
+		for {
+			messageType, message, err := clientConn.ReadMessage()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if err := backendConn.WriteMessage(messageType, message); err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+	
+	// 后端 -> 客户端
+	go func() {
+		for {
+			messageType, message, err := backendConn.ReadMessage()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if err := clientConn.WriteMessage(messageType, message); err != nil {
+				errChan <- err
+				return
+			}
+		}
+	}()
+
+	// 等待任一方向发生错误
+	<-errChan
 }
 
-// 处理客户端列表查询
-func (lb *LoadBalancer) handleClientList(w http.ResponseWriter, r *http.Request) {
-	lb.clientsMu.RLock()
-	defer lb.clientsMu.RUnlock()
+// 启动负载均衡器
+func (lb *LoadBalancer) Start() error {
+	// API 路由
+	http.HandleFunc("/api/global-clients", lb.handleGlobalClients)
+	http.HandleFunc("/api/all-clients", lb.handleAllClients)  // 聚合所有节点的客户端
+	
+	// 所有其他请求都通过转发处理器
+	http.HandleFunc("/", lb.handleRequest)
+	
+	log.Printf("纯七层负载均衡器启动在端口 %d", lb.port)
+	log.Printf("负载均衡策略: %s", lb.strategy)
+	
+	return http.ListenAndServe(":"+strconv.Itoa(lb.port), nil)
+}
 
-	clients := make([]map[string]interface{}, 0)
-	for _, client := range lb.clients {
-		clients = append(clients, map[string]interface{}{
-			"id":         client.ID,
-			"name":       client.Name,
-			"backend_id": client.BackendID,
-			"conn_time":  client.ConnTime.Format("15:04:05"),
-			"last_seen":  client.LastSeen.Format("15:04:05"),
-			"is_active":  client.IsActive,
-		})
-	}
-
+// handleGlobalClients 负载均衡器的全局客户端API（读取JSON文件）
+func (lb *LoadBalancer) handleGlobalClients(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"clients": clients,
+	
+	// 直接读取全局JSON文件
+	globalClients := GetAllGlobalClients()
+	
+	var clients []GlobalClientInfo
+	for _, client := range globalClients {
+		clients = append(clients, *client)
+	}
+	
+	response := map[string]interface{}{
+		"source":  "loadbalancer",
 		"total":   len(clients),
-	})
+		"clients": clients,
+	}
+	
+	json.NewEncoder(w).Encode(response)
 }
 
-// 处理查询客户端名字
-func (lb *LoadBalancer) handleQuery(w http.ResponseWriter, r *http.Request) {
-	clientID := r.URL.Query().Get("client_id")
-	if clientID == "" {
-		http.Error(w, "missing client_id", http.StatusBadRequest)
-		return
-	}
-
-	lb.clientsMu.RLock()
-	client, exists := lb.clients[clientID]
-	lb.clientsMu.RUnlock()
-
-	if !exists {
-		http.Error(w, "client not found", http.StatusNotFound)
-		return
-	}
-
-	// 通过负载均衡器查询客户端名字
-	queryMsg := map[string]interface{}{
-		"type": "query_name",
-		"id":   "query_" + strconv.FormatInt(time.Now().UnixNano(), 36),
-	}
-
-	// 发送查询到客户端
-	err := client.ClientConn.WriteJSON(queryMsg)
-	if err != nil {
-		http.Error(w, "failed to query client", http.StatusInternalServerError)
-		return
-	}
-
-	// 等待响应（简化处理）
-	time.Sleep(100 * time.Millisecond)
-
+// handleAllClients 聚合所有后端节点的客户端数据
+func (lb *LoadBalancer) handleAllClients(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"client_id":   client.ID,
-		"client_name": client.Name,
-		"backend_id":  client.BackendID,
-		"status":      "ok",
-	})
-}
-
-// 处理后端服务器状态
-func (lb *LoadBalancer) handleBackends(w http.ResponseWriter, r *http.Request) {
+	
 	lb.backendsMu.RLock()
 	defer lb.backendsMu.RUnlock()
-
-	backends := make([]map[string]interface{}, 0)
+	
+	allClients := make([]GlobalClientInfo, 0)
+	totalClients := 0
+	
+	// 从所有健康的后端节点获取客户端数据
 	for _, backend := range lb.backends {
-		backends = append(backends, map[string]interface{}{
-			"id":          backend.ID,
-			"address":     backend.Address,
-			"connections": backend.Connections,
-			"is_healthy":  backend.IsHealthy,
-			"last_check":  backend.LastCheck.Format("15:04:05"),
-		})
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"backends": backends,
-		"strategy": lb.strategy,
-	})
-}
-
-// 健康检查
-func (lb *LoadBalancer) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":   "healthy",
-		"service":  "loadbalancer",
-		"clients":  len(lb.clients),
-		"backends": len(lb.backends),
-		"time":     time.Now().Format(time.RFC3339),
-	})
-}
-
-// 后端健康检查器
-func (lb *LoadBalancer) healthChecker() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		lb.checkBackendsHealth()
-	}
-}
-
-// 检查后端服务器健康状态
-func (lb *LoadBalancer) checkBackendsHealth() {
-	lb.backendsMu.Lock()
-	defer lb.backendsMu.Unlock()
-
-	for _, backend := range lb.backends {
-		// 简单的健康检查：尝试HTTP请求
-		healthURL := backend.Address
-		if healthURL[0:2] == "ws" {
-			healthURL = "http" + healthURL[2:] // ws://... -> http://...
-			if healthURL[len(healthURL)-3:] == "/ws" {
-				healthURL = healthURL[:len(healthURL)-3] + "/health"
-			}
-		}
-
-		// 创建带超时的HTTP客户端
-		client := &http.Client{
-			Timeout: 5 * time.Second,
+		if !backend.IsHealthy {
+			continue
 		}
 		
-		resp, err := client.Get(healthURL)
+		// 从后端节点获取全局客户端数据
+		nodeURL := fmt.Sprintf("%s/api/global-clients", backend.HTTPAddress)
+		resp, err := http.Get(nodeURL)
 		if err != nil {
-			if backend.IsHealthy {
-				log.Printf("后端服务器 %s 变为不健康: %v", backend.ID, err)
-			}
-			backend.IsHealthy = false
-		} else {
-			resp.Body.Close()
-			if !backend.IsHealthy {
-				log.Printf("后端服务器 %s 恢复健康", backend.ID)
-			}
-			backend.IsHealthy = true
+			log.Printf("获取节点 %s 客户端数据失败: %v", backend.ID, err)
+			continue
+		}
+		defer resp.Body.Close()
+		
+		var nodeResponse struct {
+			Clients []GlobalClientInfo `json:"clients"`
+			Total   int               `json:"total"`
 		}
 		
-		backend.LastCheck = time.Now()
+		if err := json.NewDecoder(resp.Body).Decode(&nodeResponse); err != nil {
+			log.Printf("解析节点 %s 客户端数据失败: %v", backend.ID, err)
+			continue
+		}
+		
+		allClients = append(allClients, nodeResponse.Clients...)
+		totalClients += nodeResponse.Total
 	}
+	
+	// 去重处理（按客户端ID）
+	uniqueClients := make(map[string]GlobalClientInfo)
+	for _, client := range allClients {
+		uniqueClients[client.ID] = client
+	}
+	
+	finalClients := make([]GlobalClientInfo, 0, len(uniqueClients))
+	for _, client := range uniqueClients {
+		finalClients = append(finalClients, client)
+	}
+	
+	response := map[string]interface{}{
+		"source":         "aggregated_from_all_nodes",
+		"total":          len(finalClients),
+		"clients":        finalClients,
+		"nodes_queried":  len(lb.backends),
+		"healthy_nodes":  func() int {
+			count := 0
+			for _, backend := range lb.backends {
+				if backend.IsHealthy {
+					count++
+				}
+			}
+			return count
+		}(),
+	}
+	
+	json.NewEncoder(w).Encode(response)
 }

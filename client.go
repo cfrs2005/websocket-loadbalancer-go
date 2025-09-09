@@ -120,6 +120,10 @@ func (c *WebSocketClient) handleServerMessage(msg map[string]interface{}) {
 	}
 
 	switch msgType {
+	case "command":
+		// 处理服务器发送的指令
+		c.handleCommand(msg)
+
 	case "query_name":
 		// 服务器查询客户端名字
 		log.Printf("📨 收到服务器查询名字请求")
@@ -148,6 +152,122 @@ func (c *WebSocketClient) handleServerMessage(msg map[string]interface{}) {
 
 	default:
 		log.Printf("收到消息: %s", msgType)
+	}
+}
+
+// handleCommand 处理服务器发送的指令
+func (c *WebSocketClient) handleCommand(msg map[string]interface{}) {
+	command, ok := msg["command"].(string)
+	if !ok {
+		log.Printf("❌ 收到无效指令: %v", msg)
+		c.sendCommandResponse("error", "无效的指令格式", nil)
+		return
+	}
+
+	log.Printf("📨 收到指令: %s", command)
+
+	var responseType, responseMessage string
+	var responseData interface{}
+
+	switch command {
+	case "ping":
+		// Ping测试
+		responseType = "success"
+		responseMessage = "pong"
+		responseData = map[string]interface{}{
+			"client_info": map[string]interface{}{
+				"id":   c.clientID,
+				"name": c.clientName,
+			},
+			"server_time": time.Now().Unix(),
+			"latency":     "< 1ms",
+		}
+
+	case "status":
+		// 获取客户端状态
+		responseType = "success"
+		responseMessage = "客户端状态正常"
+		responseData = map[string]interface{}{
+			"client_id":   c.clientID,
+			"client_name": c.clientName,
+			"status":      "online",
+			"uptime":      time.Now().Unix(), // 简化版，实际应该记录启动时间
+			"version":     "1.0.0",
+			"platform":    "Go WebSocket Client",
+		}
+
+	case "restart":
+		// 重启连接
+		responseType = "success"
+		responseMessage = "即将重启连接"
+		responseData = map[string]interface{}{
+			"restart_in": "3 seconds",
+		}
+
+		// 发送响应后重启连接
+		c.sendCommandResponse(responseType, responseMessage, responseData)
+		
+		log.Printf("🔄 3秒后重启连接...")
+		go func() {
+			time.Sleep(3 * time.Second)
+			c.conn.Close() // 关闭连接，触发重连机制
+		}()
+		return
+
+	case "info":
+		// 获取详细信息
+		responseType = "success"
+		responseMessage = "客户端信息"
+		responseData = map[string]interface{}{
+			"client_id":     c.clientID,
+			"client_name":   c.clientName,
+			"proxy_url":     c.proxyURL,
+			"server_url":    c.serverURL,
+			"connected":     c.conn != nil,
+			"timestamp":     time.Now().Unix(),
+			"capabilities": []string{"ping", "status", "restart", "info", "echo"},
+		}
+
+	default:
+		// 处理自定义指令
+		if command == "echo" {
+			// Echo指令 - 回显数据
+			data := msg["data"]
+			responseType = "success"
+			responseMessage = "echo响应"
+			responseData = map[string]interface{}{
+				"original_data": data,
+				"echo_time":     time.Now().Unix(),
+			}
+		} else {
+			// 未知指令
+			responseType = "error"
+			responseMessage = fmt.Sprintf("未知指令: %s", command)
+			responseData = map[string]interface{}{
+				"supported_commands": []string{"ping", "status", "restart", "info", "echo"},
+			}
+		}
+	}
+
+	// 发送响应
+	c.sendCommandResponse(responseType, responseMessage, responseData)
+}
+
+// sendCommandResponse 发送指令响应
+func (c *WebSocketClient) sendCommandResponse(responseType, message string, data interface{}) {
+	response := map[string]interface{}{
+		"type":      "command_response",
+		"result":    responseType,
+		"message":   message,
+		"data":      data,
+		"client_id": c.clientID,
+		"timestamp": time.Now().Unix(),
+	}
+
+	if err := c.conn.WriteJSON(response); err != nil {
+		log.Printf("❌ 发送指令响应失败: %v", err)
+	} else {
+		log.Printf("✅ 已发送指令响应: %s - %s", responseType, message)
 	}
 }
 

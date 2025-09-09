@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 后端节点管理界面</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .header h1 {
+            color: #2d3748;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .node-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .info-card {
+            background: rgba(255, 255, 255, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .info-label {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #2d3748;
+        }
+
+        .section {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .section h2 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            font-size: 1.8rem;
+        }
+
+        .clients-grid {
+            display: grid;
+            gap: 20px;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        }
+
+        .client-card {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .client-name {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .client-details {
+            font-size: 0.9rem;
+            opacity: 0.9;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+
+        .status.healthy {
+            background: #48bb78;
+            color: white;
+        }
+
+        .status.unhealthy {
+            background: #f56565;
+            color: white;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+
+        .no-data {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+            
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🖥️ WebSocket 后端节点</h1>
+            <p>节点管理和监控界面</p>
+            
+            <div class="node-info">
+                <div class="info-card">
+                    <div class="info-label">节点ID</div>
+                    <div class="info-value" id="nodeId">-</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">端口</div>
+                    <div class="info-value" id="nodePort">-</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">连接数</div>
+                    <div class="info-value" id="clientCount">0</div>
+                </div>
+                <div class="info-card">
+                    <div class="info-label">状态</div>
+                    <div class="info-value">
+                        <span class="status healthy" id="nodeStatus">运行中</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>🎛️ 控制面板</h2>
+            <div class="controls">
+                <button onclick="refreshData()">🔄 刷新数据</button>
+                <button onclick="clearSearch()">🧹 清空搜索</button>
+                <button onclick="exportData()">📊 导出数据</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>👥 客户端连接 (<span id="totalClients">0</span>)</h2>
+            
+            <input type="text" id="searchBox" class="search-box" 
+                   placeholder="🔍 搜索客户端名称或ID..." 
+                   onkeyup="filterClients()">
+            
+            <div id="clientsContainer" class="clients-grid">
+                <div class="no-data">正在加载客户端数据...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let nodeData = {};
+        let clientsData = [];
+
+        // 获取当前端口
+        const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+
+        // 初始化页面
+        async function initPage() {
+            await loadNodeInfo();
+            await loadClients();
+            
+            // 每5秒自动刷新
+            setInterval(async () => {
+                await loadClients();
+            }, 5000);
+        }
+
+        // 加载节点信息
+        async function loadNodeInfo() {
+            try {
+                const response = await fetch('/api/node-info');
+                nodeData = await response.json();
+                
+                document.getElementById('nodeId').textContent = nodeData.node_id || '-';
+                document.getElementById('nodePort').textContent = nodeData.port || currentPort;
+                document.getElementById('nodeStatus').textContent = nodeData.status === 'running' ? '运行中' : '停止';
+                
+                // 更新页面标题
+                document.title = `节点 ${nodeData.node_id} - WebSocket 后端管理`;
+            } catch (error) {
+                console.error('加载节点信息失败:', error);
+            }
+        }
+
+        // 加载客户端列表
+        async function loadClients() {
+            try {
+                const response = await fetch('/api/clients');
+                const data = await response.json();
+                
+                clientsData = data.clients || [];
+                
+                // 更新连接数
+                document.getElementById('clientCount').textContent = data.total || 0;
+                document.getElementById('totalClients').textContent = data.total || 0;
+                
+                // 显示客户端列表
+                displayClients(clientsData);
+            } catch (error) {
+                console.error('加载客户端列表失败:', error);
+                document.getElementById('clientsContainer').innerHTML = 
+                    '<div class="no-data">❌ 加载客户端数据失败</div>';
+            }
+        }
+
+        // 显示客户端列表
+        function displayClients(clients) {
+            const container = document.getElementById('clientsContainer');
+            
+            if (!clients || clients.length === 0) {
+                container.innerHTML = '<div class="no-data">📭 暂无客户端连接</div>';
+                return;
+            }
+
+            const clientCards = clients.map(client => {
+                const connTime = new Date(client.conn_time).toLocaleString();
+                const lastSeen = new Date(client.last_seen).toLocaleString();
+                
+                return `
+                    <div class="client-card">
+                        <div class="client-name">
+                            👤 ${client.name || client.id}
+                        </div>
+                        <div class="client-details">
+                            <div><strong>ID:</strong> ${client.id}</div>
+                            <div><strong>连接时间:</strong> ${connTime}</div>
+                            <div><strong>最后活跃:</strong> ${lastSeen}</div>
+                            <div><strong>状态:</strong> ${client.is_active ? '🟢 活跃' : '🔴 离线'}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = clientCards;
+        }
+
+        // 搜索过滤客户端
+        function filterClients() {
+            const searchTerm = document.getElementById('searchBox').value.toLowerCase().trim();
+            
+            if (!searchTerm) {
+                displayClients(clientsData);
+                return;
+            }
+
+            const filtered = clientsData.filter(client => 
+                (client.name && client.name.toLowerCase().includes(searchTerm)) ||
+                (client.id && client.id.toLowerCase().includes(searchTerm))
+            );
+
+            displayClients(filtered);
+        }
+
+        // 清空搜索
+        function clearSearch() {
+            document.getElementById('searchBox').value = '';
+            displayClients(clientsData);
+        }
+
+        // 刷新数据
+        async function refreshData() {
+            await loadNodeInfo();
+            await loadClients();
+        }
+
+        // 导出数据
+        function exportData() {
+            const exportData = {
+                node: nodeData,
+                clients: clientsData,
+                export_time: new Date().toISOString()
+            };
+            
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `node-${nodeData.node_id}-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', initPage);
+    </script>
+</body>
+</html>
